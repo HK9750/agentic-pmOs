@@ -3,11 +3,20 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState, useTransition } from "react";
-import type { ReactNode } from "react";
-import { AppFrame } from "../components/AppFrame";
-import { TerminalPanel } from "../components/TerminalPanel";
+import { AppShell } from "../components/app-shell";
+import { Notice } from "../components/notice";
+import { PageHeader } from "../components/page-header";
 import { apiRequest, errorMessage } from "../lib/api";
 import type { ProfileResponse, SessionInfo, SessionsResponse, User } from "../lib/types";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 
 export function AccountClient() {
   const router = useRouter();
@@ -17,11 +26,6 @@ export function AccountClient() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-
-  const refreshSessions = useCallback(async () => {
-    const body = await apiRequest<SessionsResponse>("/api/v1/auth/sessions");
-    setSessions(body.sessions);
-  }, []);
 
   const loadAccount = useCallback(async () => {
     try {
@@ -35,44 +39,45 @@ export function AccountClient() {
     } catch (requestError) {
       setUser(null);
       setSessions([]);
-      setError(errorMessage(requestError, "You need to sign in before managing your account."));
+      setError(errorMessage(requestError, "Sign in to manage your account."));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void loadAccount();
-    }, 0);
+    const timeout = window.setTimeout(() => void loadAccount(), 0);
     return () => window.clearTimeout(timeout);
   }, [loadAccount]);
+
+  async function refreshSessions() {
+    const body = await apiRequest<SessionsResponse>("/api/v1/auth/sessions");
+    setSessions(body.sessions);
+  }
 
   function updateProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setNotice(null);
-
     const form = new FormData(event.currentTarget);
-    const payload = {
-      name: String(form.get("name") ?? ""),
-      title: String(form.get("title") ?? ""),
-      timezone: String(form.get("timezone") ?? "UTC"),
-      avatar_url: String(form.get("avatar_url") ?? ""),
-      bio: String(form.get("bio") ?? ""),
-    };
 
     startTransition(() => {
       void (async () => {
         try {
           const body = await apiRequest<{ user: User }>("/api/v1/profile", {
             method: "PATCH",
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              name: String(form.get("name") ?? ""),
+              title: String(form.get("title") ?? ""),
+              timezone: String(form.get("timezone") ?? "UTC"),
+              avatar_url: String(form.get("avatar_url") ?? ""),
+              bio: String(form.get("bio") ?? ""),
+            }),
           });
           setUser(body.user);
-          setNotice("Profile saved. This identity is now ready for workspace actions.");
+          setNotice("Profile saved.");
         } catch (requestError) {
-          setError(errorMessage(requestError, "Could not update profile"));
+          setError(errorMessage(requestError, "Could not save profile"));
         }
       })();
     });
@@ -82,25 +87,23 @@ export function AccountClient() {
     event.preventDefault();
     setError(null);
     setNotice(null);
-
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const payload = {
-      current_password: String(form.get("current_password") ?? ""),
-      new_password: String(form.get("new_password") ?? ""),
-      logout_other_sessions: form.get("logout_other_sessions") === "on",
-    };
 
     startTransition(() => {
       void (async () => {
         try {
           await apiRequest<void>("/api/v1/auth/password", {
             method: "PATCH",
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              current_password: String(form.get("current_password") ?? ""),
+              new_password: String(form.get("new_password") ?? ""),
+              logout_other_sessions: form.get("logout_other_sessions") === "on",
+            }),
           });
           formElement.reset();
-          setNotice("Password changed. Session list refreshed.");
           await refreshSessions();
+          setNotice("Password changed.");
         } catch (requestError) {
           setError(errorMessage(requestError, "Could not change password"));
         }
@@ -109,9 +112,6 @@ export function AccountClient() {
   }
 
   function revokeSession(sessionID: string) {
-    setError(null);
-    setNotice(null);
-
     startTransition(() => {
       void (async () => {
         try {
@@ -119,8 +119,8 @@ export function AccountClient() {
             method: "POST",
             body: JSON.stringify({ session_id: sessionID }),
           });
-          setNotice("Session revoked.");
           await refreshSessions();
+          setNotice("Session revoked.");
         } catch (requestError) {
           setError(errorMessage(requestError, "Could not revoke session"));
         }
@@ -128,34 +128,12 @@ export function AccountClient() {
     });
   }
 
-  function logoutAll() {
-    setError(null);
-    setNotice(null);
-
-    startTransition(() => {
-      void (async () => {
-        try {
-          await apiRequest<void>("/api/v1/auth/logout-all", {
-            method: "POST",
-            body: JSON.stringify({ keep_current: true }),
-          });
-          setNotice("Other sessions revoked.");
-          await refreshSessions();
-        } catch (requestError) {
-          setError(errorMessage(requestError, "Could not revoke sessions"));
-        }
-      })();
-    });
-  }
-
-  function logoutCurrent() {
+  function logout() {
     startTransition(() => {
       void (async () => {
         try {
           await apiRequest<void>("/api/v1/auth/logout", { method: "POST" });
         } finally {
-          setUser(null);
-          setSessions([]);
           router.push("/login");
           router.refresh();
         }
@@ -163,257 +141,147 @@ export function AccountClient() {
     });
   }
 
-  if (loading) {
-    return <LoadingState />;
-  }
-
-  if (!user) {
-    return <UnauthenticatedState error={error} />;
-  }
+  if (loading) return <CenteredCard title="Loading account" description="Fetching your secure session." />;
+  if (!user) return <AuthRequired message={error ?? "Authentication required."} />;
 
   const completion = profileCompletion(user);
 
   return (
-    <AppFrame
-      eyebrow="Account Foundation"
-      title="Make the operator profile trustworthy before project work begins."
-      description="This identity is used for workspace ownership, approvals, session history, and every future audit event. Keep it complete and secure before connecting external tools."
-      actions={
-        <>
-          <Link className="btn-primary" href="/setup">Continue setup</Link>
-          <button className="btn-secondary" disabled={isPending} onClick={logoutCurrent} type="button">Sign out</button>
-        </>
-      }
-      aside={
-        <>
-          <IdentityCard completion={completion} user={user} />
-          <SessionsCard isPending={isPending} logoutAll={logoutAll} revokeSession={revokeSession} sessions={sessions} />
-        </>
-      }
-    >
-      {error ? <Alert tone="error">{error}</Alert> : null}
-      {notice ? <Alert tone="success">{notice}</Alert> : null}
+    <AppShell aside={<AccountAside completion={completion} revokeSession={revokeSession} sessions={sessions} user={user} />}>
+      <PageHeader
+        eyebrow="Account"
+        title="Profile and security"
+        description="This identity owns workspace actions, approvals, sessions, and audit records."
+        actions={
+          <>
+            <Button asChild><Link href="/setup">Continue setup</Link></Button>
+            <Button onClick={logout} variant="outline">Sign out</Button>
+          </>
+        }
+      />
 
-      <TerminalPanel title="profile/details">
-        <form className="grid gap-5" key={user.updated_at} onSubmit={updateProfile}>
-          <SectionIntro
-            eyebrow="Profile"
-            title="Human context for workspace activity"
-            description="Agents and teammates need a clear identity for assignments, approvals, reports, and future follow-ups."
-          />
+      {error ? <Notice message={error} title="Error" variant="destructive" /> : null}
+      {notice ? <Notice message={notice} title="Saved" /> : null}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="field-label">
-              Full name
-              <input className="field-input" name="name" defaultValue={user.name} maxLength={120} required />
-            </label>
-            <label className="field-label">
-              Role or title
-              <input className="field-input" name="title" defaultValue={user.title} maxLength={120} placeholder="Project Manager" />
-            </label>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="field-label">
-              Timezone
-              <input className="field-input" name="timezone" defaultValue={user.timezone || "UTC"} maxLength={80} required />
-            </label>
-            <label className="field-label">
-              Avatar URL
-              <input className="field-input" name="avatar_url" defaultValue={user.avatar_url} maxLength={500} placeholder="https://..." />
-            </label>
-          </div>
-
-          <label className="field-label">
-            Bio
-            <textarea
-              className="field-input min-h-32 resize-y"
-              name="bio"
-              defaultValue={user.bio}
-              maxLength={800}
-              placeholder="Short context for teammates, reports, and future agent handoffs."
-            />
-          </label>
-
-          <button className="btn-primary w-fit" disabled={isPending} type="submit">Save profile</button>
-        </form>
-      </TerminalPanel>
-
-      <TerminalPanel title="security/password">
-        <form className="grid gap-5" onSubmit={changePassword}>
-          <SectionIntro
-            eyebrow="Security"
-            title="Password and session hygiene"
-            description="Use a strong password and revoke old sessions before this account starts approving external actions."
-          />
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="field-label">
-              Current password
-              <input className="field-input" name="current_password" type="password" autoComplete="current-password" required />
-            </label>
-            <label className="field-label">
-              New password
-              <input className="field-input" name="new_password" type="password" autoComplete="new-password" minLength={10} required />
-            </label>
-          </div>
-
-          <label className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-black/20 p-4 text-sm text-zinc-400">
-            <input className="h-4 w-4 accent-amber-300" name="logout_other_sessions" type="checkbox" defaultChecked />
-            Revoke other sessions after changing password
-          </label>
-
-          <button className="btn-secondary w-fit" disabled={isPending} type="submit">Change password</button>
-        </form>
-      </TerminalPanel>
-    </AppFrame>
-  );
-}
-
-function LoadingState() {
-  return (
-    <main className="grid min-h-screen place-items-center px-4">
-      <div className="app-card w-full max-w-xl p-8">
-        <p className="kicker">Account</p>
-        <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em] text-stone-50">Loading secure account context...</h1>
-      </div>
-    </main>
-  );
-}
-
-function UnauthenticatedState({ error }: { error: string | null }) {
-  return (
-    <main className="grid min-h-screen place-items-center px-4">
-      <div className="app-card w-full max-w-xl p-8">
-        <p className="kicker">Authentication Required</p>
-        <h1 className="mt-4 text-4xl font-semibold tracking-[-0.06em] text-stone-50">Sign in to manage your account.</h1>
-        <p className="mt-4 muted-copy">{error ?? "Your account context is required before workspace and project setup."}</p>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <Link className="btn-primary" href="/login">Sign in</Link>
-          <Link className="btn-secondary" href="/register">Create account</Link>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function IdentityCard({ completion, user }: { completion: number; user: User }) {
-  return (
-    <TerminalPanel title="identity/summary">
-      <div className="flex items-center gap-4">
-        <Avatar user={user} />
-        <div>
-          <h2 className="text-xl font-semibold tracking-[-0.04em] text-stone-50">{user.name || "Unnamed operator"}</h2>
-          <p className="mt-1 text-sm text-zinc-500">{user.email}</p>
-          <p className="mt-1 text-sm text-zinc-400">{user.title || "No title yet"}</p>
-        </div>
-      </div>
-      <div className="mt-5 h-2 overflow-hidden rounded-full bg-zinc-900">
-        <div className="h-full rounded-full bg-amber-200" style={{ width: `${completion}%` }} />
-      </div>
-      <dl className="mt-5 grid gap-3 text-sm">
-        <StateRow label="Profile" value={user.profile_completed_at ? "complete" : "incomplete"} />
-        <StateRow label="Completion" value={`${completion}%`} />
-        <StateRow label="Timezone" value={user.timezone || "UTC"} />
-        <StateRow label="Last login" value={user.last_login_at ? formatDate(user.last_login_at) : "now"} />
-      </dl>
-    </TerminalPanel>
-  );
-}
-
-function SessionsCard({
-  isPending,
-  logoutAll,
-  revokeSession,
-  sessions,
-}: {
-  isPending: boolean;
-  logoutAll: () => void;
-  revokeSession: (sessionID: string) => void;
-  sessions: SessionInfo[];
-}) {
-  return (
-    <TerminalPanel title="security/sessions">
-      <div className="mb-5 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-stone-100">Active sessions</h2>
-          <p className="mt-1 text-sm text-zinc-500">Revoke devices you do not recognize.</p>
-        </div>
-        <button className="btn-secondary shrink-0" disabled={isPending || sessions.length <= 1} onClick={logoutAll} type="button">
-          Revoke others
-        </button>
-      </div>
-
-      <div className="grid gap-3">
-        {sessions.map((session) => (
-          <article className="soft-card p-4" key={session.id}>
-            <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-xs text-zinc-500">{session.id.slice(0, 8)}</p>
-              {session.current ? (
-                <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-xs font-semibold text-emerald-200">Current</span>
-              ) : (
-                <button className="text-xs font-semibold text-amber-200 hover:text-amber-100" disabled={isPending} onClick={() => revokeSession(session.id)} type="button">
-                  Revoke
-                </button>
-              )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Profile</CardTitle>
+          <CardDescription>Used for workspace membership and project activity.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="grid gap-4" onSubmit={updateProfile}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field defaultValue={user.name} label="Name" name="name" required />
+              <Field defaultValue={user.title} label="Title" name="title" placeholder="Project Manager" />
+              <Field defaultValue={user.timezone || "UTC"} label="Timezone" name="timezone" required />
+              <Field defaultValue={user.avatar_url} label="Avatar URL" name="avatar_url" placeholder="https://..." />
             </div>
-            <p className="mt-3 line-clamp-2 text-xs leading-5 text-zinc-400">{session.user_agent || "Unknown device"}</p>
-            <p className="mt-3 font-mono text-xs text-zinc-600">Seen {formatDate(session.last_seen_at)}</p>
-          </article>
-        ))}
-      </div>
-    </TerminalPanel>
+            <div className="grid gap-2">
+              <Label htmlFor="bio">Bio</Label>
+              <Textarea defaultValue={user.bio} id="bio" name="bio" placeholder="Short context for teammates and future agent handoffs." />
+            </div>
+            <Button className="w-fit" disabled={isPending} type="submit">Save profile</Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Password</CardTitle>
+          <CardDescription>Use at least 10 characters with a letter and number.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="grid gap-4" onSubmit={changePassword}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Current password" name="current_password" required type="password" />
+              <Field label="New password" name="new_password" required type="password" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input className="accent-primary" defaultChecked name="logout_other_sessions" type="checkbox" />
+              Revoke other sessions
+            </label>
+            <Button className="w-fit" disabled={isPending} type="submit" variant="outline">Change password</Button>
+          </form>
+        </CardContent>
+      </Card>
+    </AppShell>
   );
 }
 
-function SectionIntro({ description, eyebrow, title }: { description: string; eyebrow: string; title: string }) {
+function AccountAside({ completion, revokeSession, sessions, user }: { completion: number; revokeSession: (id: string) => void; sessions: SessionInfo[]; user: User }) {
   return (
-    <div>
-      <p className="kicker">{eyebrow}</p>
-      <h2 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-stone-50">{title}</h2>
-      <p className="mt-2 muted-copy">{description}</p>
+    <>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <Avatar>
+              <AvatarImage src={user.avatar_url} />
+              <AvatarFallback>{(user.name || user.email).slice(0, 2).toUpperCase()}</AvatarFallback>
+            </Avatar>
+            <div>
+              <CardTitle>{user.name || "Unnamed user"}</CardTitle>
+              <CardDescription>{user.email}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div>
+            <div className="mb-2 flex justify-between text-sm"><span>Profile</span><span>{completion}%</span></div>
+            <Progress value={completion} />
+          </div>
+          <Badge variant="secondary">{user.timezone || "UTC"}</Badge>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Sessions</CardTitle>
+          <CardDescription>Active devices.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          {sessions.map((session) => (
+            <div className="rounded-lg border p-3" key={session.id}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground">{session.id.slice(0, 8)}</span>
+                {session.current ? <Badge>Current</Badge> : <Button onClick={() => revokeSession(session.id)} size="sm" variant="ghost">Revoke</Button>}
+              </div>
+              <p className="mt-2 line-clamp-1 text-xs text-muted-foreground">{session.user_agent || "Unknown device"}</p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+function Field({ defaultValue, label, name, placeholder, required, type = "text" }: { defaultValue?: string; label: string; name: string; placeholder?: string; required?: boolean; type?: string }) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={name}>{label}</Label>
+      <Input defaultValue={defaultValue} id={name} name={name} placeholder={placeholder} required={required} type={type} />
     </div>
   );
 }
 
-function Avatar({ user }: { user: User }) {
-  if (user.avatar_url) {
-    return <div aria-label="Profile avatar" className="h-20 w-20 rounded-3xl border border-zinc-800 bg-cover bg-center" style={{ backgroundImage: `url(${user.avatar_url})` }} />;
-  }
-
-  const initials = (user.name || user.email).slice(0, 2).toUpperCase();
+function CenteredCard({ description, title }: { description: string; title: string }) {
   return (
-    <div className="grid h-20 w-20 place-items-center rounded-3xl border border-amber-300/20 bg-amber-300/10 font-mono text-xl font-semibold text-amber-100">
-      {initials}
-    </div>
+    <main className="grid min-h-screen place-items-center px-4">
+      <Card className="w-full max-w-md"><CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader></Card>
+    </main>
   );
 }
 
-function Alert({ children, tone }: { children: ReactNode; tone: "error" | "success" }) {
-  const classes = tone === "error" ? "border-red-400/20 bg-red-400/10 text-red-200" : "border-emerald-400/20 bg-emerald-400/10 text-emerald-200";
-  return <p className={`rounded-2xl border px-4 py-3 text-sm ${classes}`}>{children}</p>;
-}
-
-function StateRow({ label, value }: { label: string; value: string }) {
+function AuthRequired({ message }: { message: string }) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-zinc-900 pb-3 last:border-b-0 last:pb-0">
-      <dt className="text-zinc-500">{label}</dt>
-      <dd className="font-mono text-xs text-zinc-300">{value}</dd>
-    </div>
+    <main className="grid min-h-screen place-items-center px-4">
+      <Card className="w-full max-w-md">
+        <CardHeader><CardTitle>Sign in required</CardTitle><CardDescription>{message}</CardDescription></CardHeader>
+        <CardContent className="flex gap-2"><Button asChild><Link href="/login">Sign in</Link></Button><Button asChild variant="outline"><Link href="/register">Create account</Link></Button></CardContent>
+      </Card>
+    </main>
   );
 }
 
 function profileCompletion(user: User) {
-  const fields = [user.name, user.title, user.timezone, user.bio];
-  const completed = fields.filter(Boolean).length;
-  return Math.round((completed / fields.length) * 100);
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return Math.round(([user.name, user.title, user.timezone, user.bio].filter(Boolean).length / 4) * 100);
 }
